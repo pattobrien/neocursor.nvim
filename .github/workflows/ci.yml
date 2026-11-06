@@ -48,6 +48,9 @@ jobs:
       - name: sidecar startup contract (real sidecar, synthesized install)
         run: python test/handshake_spec.py
 
+      - name: StreamCpp request body (real sidecar, local stand-in backend)
+        run: uv run --with "httpx[http2]" --with cryptography test/request_body_spec.py
+
       - name: headless tab-flow spec (canned sidecar, real jobstart plumbing)
         run: nvim --headless -u NONE -c "luafile test/flow_spec.lua"
 
@@ -62,6 +65,9 @@ jobs:
 
       - name: chain-coordinate spec (later edits are not re-shifted, appends past the end accept)
         run: nvim --headless -u NONE -c "luafile test/chain_spec.lua"
+
+      - name: request-shape spec (diff history in Cursor's trajectory format)
+        run: nvim --headless -u NONE -c "luafile test/request_shape_spec.lua"
 
       - name: tab-flow spec with hints off (chrome must not change behavior)
         env:
