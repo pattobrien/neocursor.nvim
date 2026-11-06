@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Canned sidecar for the headless flow spec: answers every request with the
-same two-edit chain (rewrite line 1, rewrite line 4), echoing the request id.
+same two-edit chain (rewrite line 1, rewrite line 4), echoing the request id,
+or with the edit list in NEOCURSOR_FAKE_EDITS_FILE when that is set.
 Invoked exactly like the real sidecar, so init.lua's job plumbing is exercised
 unmodified; the trailing real-sidecar path argument is ignored."""
 import json
@@ -9,6 +10,7 @@ import sys
 import time
 
 ERROR_FILE = os.environ.get("NEOCURSOR_FAKE_ERROR_FILE")
+EDITS_FILE = os.environ.get("NEOCURSOR_FAKE_EDITS_FILE")
 
 print("ready", file=sys.stderr, flush=True)
 
@@ -30,6 +32,9 @@ for line in sys.stdin:
         {"text": "line1 = 100", "range": {"start": 1, "endInclusive": 1}},
         {"text": "line4 = 400", "range": {"start": 4, "endInclusive": 4}},
     ]
+    if EDITS_FILE:
+        with open(EDITS_FILE, encoding="utf-8") as fh:
+            edits = json.load(fh)
     res = {
         "id": req.get("id"),
         "text": edits[0]["text"],
