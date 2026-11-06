@@ -106,6 +106,23 @@ def frame(b: bytes) -> bytes:
     return b"\x00" + struct.pack(">I", len(b)) + b
 
 
+def end_stream_error(msg: bytes):
+    try:
+        err = json.loads(msg).get("error")
+    except Exception:
+        return None
+    if not err:
+        return None
+    parts = [err.get("code") or "error"]
+    for d in err.get("details") or []:
+        debug = d.get("debug") or {}
+        info = debug.get("details") or {}
+        parts += [debug.get("error"), info.get("title"), info.get("detail")]
+    if err.get("message") and err.get("message") != "Error":
+        parts.append(err["message"])
+    return ": ".join(p for p in parts if p)
+
+
 def read_session():
     """Token + machine ids from the local Cursor install."""
     tok = read_token()
@@ -234,7 +251,7 @@ def complete(req: dict, cancelled=lambda: False):
     # bracketed by beginEdit/doneEdit, plus a cursorPredictionTarget pointing at
     # the chain's first jump. Split them into an ordered list so the client can
     # walk the chain locally (one Tab per edit) with no extra round-trips.
-    edits, cur, prediction = [], None, None
+    edits, cur, prediction, failure = [], None, None, None
 
     def flush():
         nonlocal cur
@@ -249,8 +266,9 @@ def complete(req: dict, cancelled=lambda: False):
         cur = None
 
     def feed(flag, msg):
-        nonlocal cur, prediction
+        nonlocal cur, prediction, failure
         if flag & 0x02:
+            failure = end_stream_error(msg)
             return
         try:
             j = json.loads(msg)
@@ -292,6 +310,8 @@ def complete(req: dict, cancelled=lambda: False):
     with CLIENT.stream(
         "POST", STREAM_URL, content=frame(json.dumps(body).encode()), headers=h
     ) as r:
+        if r.status_code != 200:
+            raise RuntimeError(f"StreamCpp HTTP {r.status_code}")
         for chunk in r.iter_bytes():
             if cancelled():
                 return None
@@ -304,6 +324,8 @@ def complete(req: dict, cancelled=lambda: False):
                 buf = buf[5 + ln :]
     if cancelled():
         return None
+    if failure:
+        raise RuntimeError(failure)
     flush()  # in case the stream ends mid-edit
 
     first = edits[0] if edits else {"text": "", "range": None}
