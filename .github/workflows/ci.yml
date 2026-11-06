@@ -60,6 +60,9 @@ jobs:
       - name: error-reply spec (backend rejections notify once, not per request)
         run: nvim --headless -u NONE -c "luafile test/errors_spec.lua"
 
+      - name: chain-coordinate spec (later edits are not re-shifted, appends past the end accept)
+        run: nvim --headless -u NONE -c "luafile test/chain_spec.lua"
+
       - name: tab-flow spec with hints off (chrome must not change behavior)
         env:
           NEOCURSOR_SPEC_NO_HINTS: "1"
