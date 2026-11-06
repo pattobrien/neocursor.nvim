@@ -519,11 +519,15 @@ local function handle_result(res)
   if res.error then
     state.last_error = res.error
     log("ERR     #" .. tostring(res.id) .. "  " .. tostring(res.error))
-    vim.schedule(function()
-      vim.notify("neocursor: " .. tostring(res.error), vim.log.levels.WARN)
-    end)
+    if state.notified_error ~= res.error then
+      state.notified_error = res.error
+      vim.schedule(function()
+        vim.notify("neocursor: " .. tostring(res.error), vim.log.levels.WARN)
+      end)
+    end
     return
   end
+  state.notified_error = nil
   state.last_ok_at = os.time()
   if res.id ~= state.seq then
     -- The reply outlived its request — but if the buffer is still byte-for-byte

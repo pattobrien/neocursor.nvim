@@ -4,8 +4,11 @@ same two-edit chain (rewrite line 1, rewrite line 4), echoing the request id.
 Invoked exactly like the real sidecar, so init.lua's job plumbing is exercised
 unmodified; the trailing real-sidecar path argument is ignored."""
 import json
+import os
 import sys
 import time
+
+ERROR_FILE = os.environ.get("NEOCURSOR_FAKE_ERROR_FILE")
 
 print("ready", file=sys.stderr, flush=True)
 
@@ -18,6 +21,10 @@ for line in sys.stdin:
     try:
         req = json.loads(line)
     except json.JSONDecodeError:
+        continue
+    if ERROR_FILE and os.path.exists(ERROR_FILE):
+        with open(ERROR_FILE, encoding="utf-8") as fh:
+            print(json.dumps({"id": req.get("id"), "error": fh.read().strip()}), flush=True)
         continue
     edits = [
         {"text": "line1 = 100", "range": {"start": 1, "endInclusive": 1}},

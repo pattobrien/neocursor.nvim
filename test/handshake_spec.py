@@ -130,6 +130,7 @@ with tempfile.TemporaryDirectory() as td:
             # A fake token can only produce an error — what matters is that the
             # process framed it and stayed alive instead of dying.
             check("reply is an error (fake token), not a crash", "error" in j or "text" in j)
+            check("backend rejection is surfaced, not an empty reply", "unauthenticated" in j.get("error", ""))
             check("process still alive after the error", sc.p.poll() is None)
     finally:
         sc.close()
