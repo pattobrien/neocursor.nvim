@@ -730,14 +730,25 @@ local function buf_diff(buf)
   if not b then return nil end
   local cur = buf_text(buf)
   if cur == b.text then return nil end
-  -- ctxlen=0: emit ONLY the changed lines, no surrounding context. Cursor's
-  -- backend uses diffHistory to locate the in-progress edit; 3 lines of context
-  -- (the old default) bury the change and make it mis-locate — on a real file
-  -- that silently flips the reply to edits=0. Verified against the live backend:
-  -- same request, ctxlen=3 → 0 edits, ctxlen=0 → the correct completion.
-  local d = vim.diff(b.text .. "\n", cur .. "\n", { result_type = "unified", ctxlen = 0 })
-  if type(d) ~= "string" or d == "" then return nil end
-  return cap(d, DIFF_CAP), cur
+  -- Cursor's own trajectory format, not a unified diff: "N-|old" numbered in
+  -- the old file, "N+|new" in the new one, "N |line" for unchanged lines between
+  -- changes, no surrounding context. The backend answers some edits sent as
+  -- unified hunks with `unavailable`, every time, and completes them in this
+  -- format.
+  local hunks = vim.diff(b.text .. "\n", cur .. "\n", { result_type = "indices" })
+  if #hunks == 0 then return nil end
+  local old = vim.split(b.text, "\n", { plain = true })
+  local new = vim.split(cur, "\n", { plain = true })
+  local out, after = {}, nil
+  for _, h in ipairs(hunks) do
+    local sa, ca, sb, cb = h[1], h[2], h[3], h[4]
+    local before = cb > 0 and sb - 1 or sb
+    for n = (after or before) + 1, before do out[#out + 1] = n .. " |" .. new[n] end
+    for i = 0, ca - 1 do out[#out + 1] = (sa + i) .. "-|" .. old[sa + i] end
+    for i = 0, cb - 1 do out[#out + 1] = (sb + i) .. "+|" .. new[sb + i] end
+    after = before + cb
+  end
+  return cap(table.concat(out, "\n") .. "\n", DIFF_CAP), cur
 end
 
 local function commit_diff(buf)
