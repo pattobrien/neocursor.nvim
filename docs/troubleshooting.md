@@ -90,7 +90,7 @@ Common causes:
 - **First run is still fetching deps.** The sidecar pulls `httpx[http2]` on
   first launch. Give it a few seconds, or pre-warm it:
   ```sh
-  uv run --with "httpx[http2]" python -c "import httpx"
+  uv run --with "httpx[http2]" --with cryptography python -c "import httpx, cryptography"
   ```
 - **A custom `sidecar_cmd` that doesn't work.** Clear the override and retry
   with the default before debugging anything else.

@@ -1129,7 +1129,7 @@ function M.setup(opts)
   opts = opts or {}
   state.cfg = {
     debounce = opts.debounce or 250,
-    sidecar_cmd = opts.sidecar_cmd or { "uv", "run", "--with", "httpx[http2]" },
+    sidecar_cmd = opts.sidecar_cmd or { "uv", "run", "--with", "httpx[http2]", "--with", "cryptography" },
     map_tab = opts.map_tab ~= false, -- set false when another plugin (cmp) owns <Tab>
     filetypes = opts.filetypes,      -- optional allow-list; nil = all normal buffers
     show_hints = normalize_hints(opts.show_hints), -- display-only chrome; see normalize_hints

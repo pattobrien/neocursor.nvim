@@ -42,6 +42,9 @@ jobs:
       - name: path resolution (all three platform layouts, faked)
         run: python test/paths_spec.py
 
+      - name: safeStorage token decryption (synthesized v10 blob)
+        run: uv run --with cryptography test/safe_storage_spec.py
+
       - name: sidecar startup contract (real sidecar, synthesized install)
         run: python test/handshake_spec.py
 

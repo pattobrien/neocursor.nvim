@@ -12,7 +12,7 @@ require("neocursor").setup({
   map_partial = "<M-Right>",
   filetypes   = nil,
   show_hints  = true,
-  sidecar_cmd = { "uv", "run", "--with", "httpx[http2]" },
+  sidecar_cmd = { "uv", "run", "--with", "httpx[http2]", "--with", "cryptography" },
 })
 ```
 
@@ -126,7 +126,7 @@ show_hints = { edit = false }
 
 ## `sidecar_cmd`
 
-`string[]` — default `{ "uv", "run", "--with", "httpx[http2]" }`
+`string[]` — default `{ "uv", "run", "--with", "httpx[http2]", "--with", "cryptography" }`
 
 How the Python sidecar is launched. The plugin appends the script path, so this
 is the prefix — interpreter and dependency handling only.

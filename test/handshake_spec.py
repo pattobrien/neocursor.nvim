@@ -36,7 +36,7 @@ import fake_cursor_home  # noqa: E402
 
 # Same launch shape as init.lua's sidecar_cmd; override for a preinstalled env.
 _override = os.environ.get("NC_SIDECAR_CMD")
-CMD = (_override.split() if _override else ["uv", "run", "--with", "httpx[http2]"]) + [
+CMD = (_override.split() if _override else ["uv", "run", "--with", "httpx[http2]", "--with", "cryptography"]) + [
     str(ROOT / "sidecar.py")
 ]
 
