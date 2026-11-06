@@ -89,6 +89,20 @@ local function ago(t)
   return math.floor(d / 60) .. "m ago"
 end
 
+-- The row a jump to the edit lands on. An append past the last line has no
+-- row of its own, so it parks on the last one.
+local function jump_row0(e)
+  return math.min(e.start0, vim.api.nvim_buf_line_count(e.bufnr) - 1)
+end
+
+-- Is the cursor currently on the edit's target region? This is Cursor's
+-- `cursorAtInlineEdit`: when false, <Tab> jumps here; when true, <Tab> accepts.
+local function cursor_at(e)
+  local row0 = vim.api.nvim_win_get_cursor(0)[1] - 1
+  if e.end0_excl <= e.start0 then return row0 == jump_row0(e) end
+  return row0 >= e.start0 and row0 < e.end0_excl
+end
+
 -- Persistent debug surface rendered by :NeocursorLog. The top block is a LIVE
 -- dashboard of the state machine — the phase we're in, what <Tab> would do at
 -- this instant (Cursor's cursorAtInlineEdit rule), the self-echo guard, the
@@ -110,10 +124,7 @@ local function log_refresh()
     if vim.api.nvim_get_current_buf() ~= s.bufnr then
       tab_now = "— other buf"
     else
-      local row0 = vim.api.nvim_win_get_cursor(0)[1] - 1
-      local at = (s.end0_excl <= s.start0) and (row0 == s.start0)
-        or (row0 >= s.start0 and row0 < s.end0_excl)
-      tab_now = at and "ACCEPT edit" or ("JUMP → L" .. (s.start0 + 1))
+      tab_now = cursor_at(s) and "ACCEPT edit" or ("JUMP → L" .. (s.start0 + 1))
     end
   elseif state.prediction then
     tab_now = "PREDICT jump"
@@ -203,14 +214,6 @@ local function inserting()
   return vim.api.nvim_get_mode().mode:match("^[iR]") ~= nil
 end
 
--- Is the cursor currently on the edit's target region? This is Cursor's
--- `cursorAtInlineEdit`: when false, <Tab> jumps here; when true, <Tab> accepts.
-local function cursor_at(start0, end0_excl)
-  local row0 = vim.api.nvim_win_get_cursor(0)[1] - 1
-  if end0_excl <= start0 then return row0 == start0 end
-  return row0 >= start0 and row0 < end0_excl
-end
-
 -- Record the buffer/cursor state our own edit or jump just produced. The
 -- TextChangedI/CursorMovedI events it enqueues only fire after we return to the
 -- main loop; they observe exactly this state and are swallowed by the autocmd's
@@ -264,7 +267,7 @@ local function show_edit(edit)
   if mode == "inline" then
     preview.inline(bufnr, row1 - 1, col0, ghost)
   else
-    local at = cursor_at(start0, end0_excl)
+    local at = cursor_at(edit)
     -- Advertise <Esc>, not <C-]>: leaving insert already dismisses (the
     -- ModeChanged handler in setup files the rejection), so the label is true
     -- without mapping a key —
@@ -279,25 +282,16 @@ local function show_edit(edit)
 end
 
 -- After applying the current edit, walk to the next one in the chain — locally,
--- no network. Adjust the line numbers of edits below by the applied line delta,
--- jump the cursor there, and render it. This is the "tab, tab, tab" loop.
-local function advance_after_apply(applied)
+-- no network — and render it. This is the "tab, tab, tab" loop. The backend
+-- numbers each edit against the buffer as it stands after the edits before it,
+-- so the queue is never shifted by what was just applied.
+local function advance_after_apply()
   -- Every accept path lands here — Tab, word-at-a-time, and typing the ghost
   -- out in full — so this is the one place the churn budget refills.
   state.dismissed = 0
   local q = state.queue
   if not q then return end
-  local delta = #applied.lines - (applied.end0_excl - applied.start0)
   q.idx = q.idx + 1
-  if delta ~= 0 then
-    for k = q.idx, #q.list do
-      local e = q.list[k]
-      if e.start0 >= applied.end0_excl then
-        e.start0 = e.start0 + delta
-        e.end0_excl = e.end0_excl + delta
-      end
-    end
-  end
   -- Show the next edit in place; the cursor stays put, so the next <Tab> JUMPS
   -- to it (Cursor's cursorAtInlineEdit rule), and the <Tab> after that accepts.
   while q.idx <= #q.list do
@@ -856,23 +850,13 @@ local function try_retain()
   end
   local lc = vim.api.nvim_buf_line_count(s.bufnr)
   local delta = lc - (s.buf_lines or lc)
-  if delta ~= 0 then -- a newline typed inside the range: re-anchor the tail
-    s.end0_excl = s.end0_excl + delta
-    if state.queue then
-      for k = state.queue.idx + 1, #state.queue.list do
-        local e = state.queue.list[k]
-        if e.start0 >= s.end0_excl - delta then
-          e.start0, e.end0_excl = e.start0 + delta, e.end0_excl + delta
-        end
-      end
-    end
-  end
+  s.end0_excl = s.end0_excl + delta -- a newline typed inside the range
   if s.end0_excl > lc or s.end0_excl <= s.start0 then return false end
   if not show_edit(s) then -- region now equals the suggestion: typed out in full
     preview.clear(s.bufnr)
     state.suggestion = nil
     log("CONSUME L" .. (s.start0 + 1) .. "  typed through")
-    advance_after_apply(s)
+    advance_after_apply()
     return true
   end
   if state.suggestion.mode ~= "inline" then return false end -- deviated; drop it
@@ -911,7 +895,7 @@ local function do_accept(s)
   local pos = { s.start0 + #s.lines, #(s.lines[#s.lines] or "") }
   pcall(vim.api.nvim_win_set_cursor, 0, pos)
   mark_seen(s.bufnr)
-  advance_after_apply(s) -- local; no network
+  advance_after_apply() -- local; no network
   enforce_cursor(s.bufnr, pos)
   if not state.suggestion then
     -- chain done: hand Tab over to the cursor prediction if the server sent
@@ -928,8 +912,7 @@ end
 -- true, so the NEXT <Tab> accepts. Preview stays; its hint refreshes to "accept".
 local function do_jump(s)
   if not vim.api.nvim_buf_is_valid(s.bufnr) then return end
-  local lc = vim.api.nvim_buf_line_count(s.bufnr)
-  local pos = { math.min(s.start0 + 1, lc), 0 }
+  local pos = { jump_row0(s) + 1, 0 }
   vim.api.nvim_win_set_cursor(0, pos)
   show_edit(s)
   mark_seen(s.bufnr)
@@ -1000,7 +983,7 @@ function M.accept()
       clear_suggestion() -- suggestion belongs to another buffer; Tab stays a tab
       return false
     end
-    if cursor_at(s.start0, s.end0_excl) then
+    if cursor_at(s) then
       if tab_should_indent(s) then return false end
       log("ACCEPT  L" .. (s.start0 + 1))
       run_or_defer(do_accept, s)
@@ -1043,22 +1026,12 @@ local function do_accept_partial(s)
   mark_seen(bufnr)
   local lc = vim.api.nvim_buf_line_count(bufnr)
   local delta = lc - (s.buf_lines or lc)
-  if delta ~= 0 then
-    s.end0_excl = s.end0_excl + delta
-    if state.queue then
-      for k = state.queue.idx + 1, #state.queue.list do
-        local e = state.queue.list[k]
-        if e.start0 >= s.end0_excl - delta then
-          e.start0, e.end0_excl = e.start0 + delta, e.end0_excl + delta
-        end
-      end
-    end
-  end
+  s.end0_excl = s.end0_excl + delta
   log(("PARTIAL L%d  +%d ch"):format(s.start0 + 1, #frag))
   if not show_edit(s) then -- ghost fully consumed: behaves like a full accept
     preview.clear(bufnr)
     state.suggestion = nil
-    advance_after_apply(s)
+    advance_after_apply()
     if not state.suggestion and not show_prediction() then
       state.prediction = nil
       schedule_request()
