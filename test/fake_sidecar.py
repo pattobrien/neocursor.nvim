@@ -11,6 +11,7 @@ import time
 
 ERROR_FILE = os.environ.get("NEOCURSOR_FAKE_ERROR_FILE")
 EDITS_FILE = os.environ.get("NEOCURSOR_FAKE_EDITS_FILE")
+REQUEST_FILE = os.environ.get("NEOCURSOR_FAKE_REQUEST_FILE")
 
 print("ready", file=sys.stderr, flush=True)
 
@@ -24,6 +25,9 @@ for line in sys.stdin:
         req = json.loads(line)
     except json.JSONDecodeError:
         continue
+    if REQUEST_FILE:
+        with open(REQUEST_FILE, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
     if ERROR_FILE and os.path.exists(ERROR_FILE):
         with open(ERROR_FILE, encoding="utf-8") as fh:
             print(json.dumps({"id": req.get("id"), "error": fh.read().strip()}), flush=True)
