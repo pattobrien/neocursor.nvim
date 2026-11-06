@@ -56,6 +56,6 @@ if [ "$LIVE" = "--live" ]; then
   echo; echo "--- live backend round-trip (real token, Linux paths) ---"
   { printf '%s\n' '{"id":1,"path":"demo.py","content":"def add(a, b):\n    return a + \n","line":1,"col":15,"language":"python"}'
     sleep 20
-  } | ${NC_SIDECAR_CMD:-uv run --with httpx[http2]} sidecar.py 2>&1 | tail -1
+  } | ${NC_SIDECAR_CMD:-uv run --with httpx[http2] --with cryptography} sidecar.py 2>&1 | tail -1
 fi
 CONTAINER

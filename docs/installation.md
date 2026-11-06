@@ -23,7 +23,7 @@ plugin, and pinning a version.
 {
   "teocns/neocursor.nvim",
   event = "InsertEnter",
-  build = 'uv run --with "httpx[http2]" python -c "import httpx"',
+  build = 'uv run --with "httpx[http2]" --with cryptography python -c "import httpx, cryptography"',
   opts = {},
 }
 ```
@@ -53,7 +53,7 @@ vim.api.nvim_create_autocmd("PackChanged", {
   callback = function(ev)
     if ev.data.spec.name ~= "neocursor.nvim" then return end
     if ev.data.kind == "install" or ev.data.kind == "update" then
-      vim.system { "uv", "run", "--with", "httpx[http2]", "python", "-c", "import httpx" }
+      vim.system { "uv", "run", "--with", "httpx[http2]", "--with", "cryptography", "python", "-c", "import httpx, cryptography" }
     end
   end,
 })

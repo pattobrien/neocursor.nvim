@@ -68,7 +68,7 @@ wherever your platform puts it. Portable install, Flatpak/Snap, or WSL? See
   "teocns/neocursor.nvim",
   event = "InsertEnter",
   -- pre-warm the sidecar (double quotes so cmd.exe and sh both parse it)
-  build = 'uv run --with "httpx[http2]" python -c "import httpx"',
+  build = 'uv run --with "httpx[http2]" --with cryptography python -c "import httpx, cryptography"',
   opts = {},
 }
 ```
@@ -163,7 +163,7 @@ require("neocursor").setup({
   map_partial = "<M-Right>",
   filetypes   = nil,
   show_hints  = true,
-  sidecar_cmd = { "uv", "run", "--with", "httpx[http2]" },
+  sidecar_cmd = { "uv", "run", "--with", "httpx[http2]", "--with", "cryptography" },
 })
 ```
 

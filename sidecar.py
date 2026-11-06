@@ -15,11 +15,12 @@ Protocol (one JSON object per line, both directions):
 line/col in the request are 0-indexed (neovim). range in the reply is
 1-indexed inclusive (as Cursor's backend returns it).
 
-Launch:  uv run --with 'httpx[http2]' sidecar.py
+Launch:  uv run --with 'httpx[http2]' --with cryptography sidecar.py
 """
 import io, os, sys, json, base64, time, sqlite3, struct, socket, subprocess, threading
 import httpx
 import cursor_paths
+import cursor_safe_storage
 
 # Pin the stdio codec instead of inheriting the platform's: Windows text mode
 # would rewrite our "\n" record separator to "\r\n" (the client frames replies
@@ -85,7 +86,7 @@ def read_token() -> str:
         raise RuntimeError(
             f"no cursorAuth/accessToken in {cursor_paths.state_db()} — is Cursor signed in?"
         )
-    return row[0]
+    return cursor_safe_storage.unseal(row[0], cursor_paths.support_dir().name)
 
 
 def alf(b: bytes) -> bytes:
