@@ -205,7 +205,8 @@ def _fdh(h: dict) -> dict:
 
 
 def _linter(l: dict) -> dict:
-    # neutral nvim bundle -> Cursor LinterErrors (positions are 0-indexed)
+    # neutral nvim bundle (0-indexed) -> Cursor LinterErrors, which Cursor fills
+    # straight from Monaco markers: 1-indexed lines and columns
     errors = []
     for e in l.get("errors") or []:
         item = {"message": e.get("message", ""), "severity": e.get("severity", 1)}
@@ -214,8 +215,8 @@ def _linter(l: dict) -> dict:
         r = e.get("range")
         if r:
             item["range"] = {
-                "startPosition": {"line": r.get("sl", 0), "column": r.get("sc", 0)},
-                "endPosition": {"line": r.get("el", 0), "column": r.get("ec", 0)},
+                "startPosition": {"line": r.get("sl", 0) + 1, "column": r.get("sc", 0) + 1},
+                "endPosition": {"line": r.get("el", 0) + 1, "column": r.get("ec", 0) + 1},
             }
         errors.append(item)
     return {"relativeWorkspacePath": l.get("path") or "untitled", "errors": errors}
