@@ -38,7 +38,7 @@ local state = {
   stderr_tail = {}, -- last stderr lines, replayed if the sidecar dies before ready
 }
 
--- Hint chrome — the ⟪neocursor · <Tab> …⟫ label on an edit and the ⟪<Tab> → L42⟫
+-- Hint chrome — the "⇥ accept · ⎋ dismiss" label on an edit and the "⇥ → L42"
 -- pill at a jump target — is display-only. Hiding it changes what you see, never
 -- what <Tab> does, so every gate below still fires exactly as it did.
 local HINTS_ALL = { edit = true, prediction = true }
@@ -273,9 +273,9 @@ local function show_edit(edit)
     -- without mapping a key —
     -- and it names the one key every neovim user presses without thinking.
     local label = hints().edit
-      and ((at and "<Tab> accept" or "<Tab> jump") .. " · <Esc> dismiss")
+      and require("neocursor.ui").label(at and "accept" or "jump", state.cfg.ui)
       or nil
-    preview.diff(bufnr, start0, cur_range, lines, label)
+    preview.diff(bufnr, start0, cur_range, lines, label, state.cfg.ui)
   end
   log(("SHOW    %-6s L%d  (%d ln)"):format(mode, start0 + 1, #lines))
   return true
@@ -411,11 +411,13 @@ local function show_prediction()
     local lc = vim.api.nvim_buf_line_count(bufnr)
     local row1 = math.min(math.max(p.line, 1), lc)
     if row1 == vim.api.nvim_win_get_cursor(0)[1] then return false end
-    if paint then preview.prediction(bufnr, row1 - 1, "<Tab> → L" .. row1) end
+    if paint then preview.prediction(bufnr, row1 - 1, require("neocursor.ui").label("prediction", state.cfg.ui, "L" .. row1)) end
   else
     -- cross-file target: anchor the hint at the cursor, name the destination
     local cur0 = vim.api.nvim_win_get_cursor(0)[1] - 1
-    if paint then preview.prediction(bufnr, cur0, ("<Tab> → %s:%d"):format(p.path, p.line)) end
+    if paint then
+      preview.prediction(bufnr, cur0, require("neocursor.ui").label("prediction", state.cfg.ui, ("%s:%d"):format(p.path, p.line)))
+    end
   end
   log(("PRED    → %s:%d"):format(p.path or "·", p.line))
   return true
@@ -1121,6 +1123,7 @@ function M.setup(opts)
     map_tab = opts.map_tab ~= false, -- set false when another plugin (cmp) owns <Tab>
     filetypes = opts.filetypes,      -- optional allow-list; nil = all normal buffers
     show_hints = normalize_hints(opts.show_hints), -- display-only chrome; see normalize_hints
+    ui = require("neocursor.ui").setup(opts.ui),
     exclude_patterns = {},           -- filled from CppConfig (skip .env/.pem/... as context)
     heuristics = {},                 -- filled from CppConfig (active suppression rules)
     reject_hard = 2,
@@ -1279,6 +1282,7 @@ function M.setup(opts)
       "config      : debounce=" .. state.cfg.debounce .. "ms  heuristics=" .. #state.cfg.heuristics
         .. "  excludes=" .. #state.cfg.exclude_patterns,
       "hints       : edit=" .. tostring(hints().edit) .. "  prediction=" .. tostring(hints().prediction),
+      "ui          : " .. vim.inspect(state.cfg.ui, { newline = " ", indent = "" }),
       "last suppress: " .. tostring(state.last_suppressed or "none"),
       "dismissed   : " .. state.dismissed .. "/" .. tostring(state.cfg.max_cleared or 20)
         .. (rejected_too_many() and "  (muted — passive triggers off until you accept)" or ""),
