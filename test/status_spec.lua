@@ -58,6 +58,12 @@ local function logged(pat)
   return false
 end
 
+local landed = {
+  state = "idle",
+  suggestion = { mode = "diff", line = 1, at_cursor = true },
+  prediction = { line = 2 },
+}
+
 local function round_request(done)
   local mark = #events
   input("A1")
@@ -68,11 +74,11 @@ local function round_request(done)
       poll(function() return is("idle")() and nc.has_suggestion() and #since(mark) >= 2 end, 3000, function()
         check("reply landed: idle with suggestion", { nc.status().state, nc.has_suggestion() }, { "idle", true })
         check("one pending and one idle event, no flicker at the debounce edge", since(mark), {
-          { state = "pending" }, { state = "idle" },
+          { state = "pending" }, landed,
         })
         done()
       end, function()
-        check("reply landed: idle with suggestion", { nc.status().state, nc.has_suggestion(), since(mark) }, { "idle", true, { { state = "pending" }, { state = "idle" } } })
+        check("reply landed: idle with suggestion", { nc.status().state, nc.has_suggestion(), since(mark) }, { "idle", true, { { state = "pending" }, landed } })
         done()
       end)
     end, function()

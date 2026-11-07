@@ -72,6 +72,9 @@ jobs:
       - name: status spec (idle/pending/disabled machine and the NeocursorStatus event)
         run: nvim --headless -u NONE -c "luafile test/status_spec.lua"
 
+      - name: statusline spec (status() suggestion/prediction fields, statusline() text and show toggles)
+        run: nvim --headless -u NONE -c "luafile test/statusline_spec.lua"
+
       - name: tab-flow spec with hints off (chrome must not change behavior)
         env:
           NEOCURSOR_SPEC_NO_HINTS: "1"
