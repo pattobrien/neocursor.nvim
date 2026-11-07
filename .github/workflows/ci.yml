@@ -57,6 +57,9 @@ jobs:
       - name: hint chrome spec (show_hints rendering + normalization)
         run: nvim --headless -u NONE -c "luafile test/hints_spec.lua"
 
+      - name: hint ui spec (elevations, keycaps, identifier rendering, highlight overrides)
+        run: nvim --headless -u NONE -c "luafile test/ui_spec.lua"
+
       - name: insert-only spec (reply after <Esc> dropped, <C-c> dismisses, <C-o> detours)
         run: nvim --headless -u NONE -c "luafile test/modes_spec.lua"
 

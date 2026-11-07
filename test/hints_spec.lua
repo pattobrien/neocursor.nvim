@@ -1,8 +1,8 @@
 -- Spec for `show_hints`: the hint chrome is display-only. Run from the repo root:
 --   nvim --headless -u NONE -c "luafile test/hints_spec.lua"
 --
--- Two surfaces are covered: the ⟪neocursor · <Tab> …⟫ label painted beside a diff
--- (preview.diff) and the ⟪<Tab> → L42⟫ pill at a jump target (preview.prediction).
+-- Two surfaces are covered: the "⇥ accept · ⎋ dismiss" label painted beside a diff
+-- (preview.diff) and the "⇥ → L42" pill at a jump target (preview.prediction).
 -- The property that matters is asymmetric: turning hints off must remove the
 -- label and nothing else — the deletions, the additions, and (in init.lua) the
 -- jump gating all stay exactly as they were.
@@ -20,7 +20,9 @@ local function check(desc, got, want)
 end
 
 local preview = require("neocursor.preview")
+local ui = require("neocursor.ui")
 local ns = preview.namespace()
+local ucfg = ui.normalize(nil)
 
 local bufnr = vim.api.nvim_create_buf(false, true)
 vim.api.nvim_set_current_buf(bufnr)
@@ -43,10 +45,18 @@ local function marks(namespace)
   return out
 end
 
+local function is_label(text)
+  if text:find(ucfg.keycaps.tab, 1, true) then return true end
+  for _, verb in ipairs({ "accept", "jump", "dismiss" }) do
+    if text:find(verb, 1, true) then return true end
+  end
+  return false
+end
+
 local function hint_marks()
   local n = 0
   for _, m in ipairs(marks(ns)) do
-    if m.text:find("neocursor ·", 1, true) then n = n + 1 end
+    if is_label(m.text) then n = n + 1 end
   end
   return n
 end
@@ -65,23 +75,23 @@ local old_lines = { "line1 = 1", "line2 = 2" }
 local new_lines = { "line1 = 111", "line2 = 2" }
 
 reseed()
-preview.diff(bufnr, 0, old_lines, new_lines, "<Tab> accept")
+preview.diff(bufnr, 0, old_lines, new_lines, ui.label("accept", ucfg), ucfg)
 local body_with_hint = body_marks()
 check("hint shown when a label is passed", hint_marks(), 1)
 check("diff body rendered alongside the hint", body_with_hint > 0, true)
 
 reseed()
-preview.diff(bufnr, 0, old_lines, new_lines, nil)
+preview.diff(bufnr, 0, old_lines, new_lines, nil, ucfg)
 check("hint absent when the label is nil", hint_marks(), 0)
 check("diff body identical without the hint", body_marks(), body_with_hint)
 
 reseed()
-preview.diff(bufnr, 0, old_lines, new_lines, "<Tab> jump")
+preview.diff(bufnr, 0, old_lines, new_lines, ui.label("jump", ucfg), ucfg)
 local jump_label = ""
 for _, m in ipairs(marks(ns)) do
-  if m.text:find("neocursor ·", 1, true) then jump_label = m.text end
+  if is_label(m.text) then jump_label = m.text end
 end
-check("label text is the caller's, verbatim", jump_label, "  ⟪neocursor · <Tab> jump⟫")
+check("label text is the caller's, verbatim", jump_label, "  ⇥ jump · ⎋ dismiss")
 
 -- ─── preview.prediction ──────────────────────────────────────────────────────
 -- The pill lives in its own namespace so a suggestion clear never kills it.
@@ -91,10 +101,10 @@ local function pred_marks()
 end
 
 reseed()
-preview.prediction(bufnr, 1, "<Tab> → L2")
+preview.prediction(bufnr, 1, ui.label("prediction", ucfg, "L2"))
 check("prediction pill painted", pred_marks(), 1)
 
-preview.diff(bufnr, 0, old_lines, new_lines, "<Tab> accept")
+preview.diff(bufnr, 0, old_lines, new_lines, ui.label("accept", ucfg), ucfg)
 check("pill survives a suggestion render (separate namespace)", pred_marks(), 1)
 preview.clear(bufnr)
 check("pill survives a suggestion clear", pred_marks(), 1)
