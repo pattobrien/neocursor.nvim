@@ -6,6 +6,7 @@ local M = {}
 
 local preview = require("neocursor.preview")
 local heuristics = require("neocursor.heuristics")
+local statusline = require("neocursor.statusline")
 local uv = vim.uv or vim.loop
 
 local state = {
@@ -40,7 +41,7 @@ local state = {
   status_emit_queued = false,
 }
 
--- Hint chrome — the ⟪neocursor · <Tab> …⟫ label on an edit and the ⟪<Tab> → L42⟫
+-- Hint chrome — the "⇥ accept · ⎋ dismiss" label on an edit and the "⇥ → L42"
 -- pill at a jump target — is display-only. Hiding it changes what you see, never
 -- what <Tab> does, so every gate below still fires exactly as it did.
 local HINTS_ALL = { edit = true, prediction = true }
@@ -64,12 +65,15 @@ local function plugin_root()
   return vim.fn.fnamemodify(src, ":h:h:h") -- .../lua/neocursor/init.lua -> root
 end
 
+local sync_status
+
 local function clear_suggestion()
   if state.suggestion then
     preview.clear(state.suggestion.bufnr)
     state.suggestion = nil
   end
   state.queue = nil -- abandon any pending multi-edit chain
+  sync_status()
 end
 
 local function buf_relpath(b)
@@ -226,9 +230,28 @@ local function status_of()
   return "idle", nil
 end
 
+local function suggestion_status()
+  local s = state.suggestion
+  if not s then return nil end
+  local here = vim.api.nvim_get_current_buf() == s.bufnr
+  return { mode = s.mode, line = s.start0 + 1, at_cursor = here and cursor_at(s) }
+end
+
+local function prediction_status()
+  local p = state.prediction
+  if not (p and p.line) then return nil end
+  local bufnr = vim.api.nvim_get_current_buf()
+  if p.path and p.path ~= buf_relpath(bufnr) then return { line = p.line, path = p.path } end
+  return { line = math.min(math.max(p.line, 1), vim.api.nvim_buf_line_count(bufnr)) }
+end
+
 function M.status()
   local s, reason = status_of()
-  return { state = s, reason = reason }
+  return { state = s, reason = reason, suggestion = suggestion_status(), prediction = prediction_status() }
+end
+
+function M.statusline()
+  return statusline.render(M.status(), state.cfg and state.cfg.statusline)
 end
 
 local function emit_status()
@@ -239,7 +262,7 @@ local function emit_status()
   vim.api.nvim_exec_autocmds("User", { pattern = "NeocursorStatus", modeline = false, data = now })
 end
 
-local function sync_status()
+function sync_status()
   if state.status_emit_queued then return end
   state.status_emit_queued = true
   vim.schedule(emit_status)
@@ -313,11 +336,12 @@ local function show_edit(edit)
     -- without mapping a key —
     -- and it names the one key every neovim user presses without thinking.
     local label = hints().edit
-      and ((at and "<Tab> accept" or "<Tab> jump") .. " · <Esc> dismiss")
+      and require("neocursor.ui").label(at and "accept" or "jump", state.cfg.ui)
       or nil
-    preview.diff(bufnr, start0, cur_range, lines, label)
+    preview.diff(bufnr, start0, cur_range, lines, label, state.cfg.ui)
   end
   log(("SHOW    %-6s L%d  (%d ln)"):format(mode, start0 + 1, #lines))
+  sync_status()
   return true
 end
 
@@ -329,6 +353,7 @@ local function advance_after_apply()
   -- Every accept path lands here — Tab, word-at-a-time, and typing the ghost
   -- out in full — so this is the one place the churn budget refills.
   state.dismissed = 0
+  sync_status()
   local q = state.queue
   if not q then return end
   q.idx = q.idx + 1
@@ -432,6 +457,7 @@ local function reject_prediction(bufnr)
   record_pred_reject(state.prediction)
   state.prediction = nil
   preview.clear_prediction(bufnr or 0)
+  sync_status()
   return true
 end
 
@@ -451,13 +477,16 @@ local function show_prediction()
     local lc = vim.api.nvim_buf_line_count(bufnr)
     local row1 = math.min(math.max(p.line, 1), lc)
     if row1 == vim.api.nvim_win_get_cursor(0)[1] then return false end
-    if paint then preview.prediction(bufnr, row1 - 1, "<Tab> → L" .. row1) end
+    if paint then preview.prediction(bufnr, row1 - 1, require("neocursor.ui").label("prediction", state.cfg.ui, "L" .. row1)) end
   else
     -- cross-file target: anchor the hint at the cursor, name the destination
     local cur0 = vim.api.nvim_win_get_cursor(0)[1] - 1
-    if paint then preview.prediction(bufnr, cur0, ("<Tab> → %s:%d"):format(p.path, p.line)) end
+    if paint then
+      preview.prediction(bufnr, cur0, require("neocursor.ui").label("prediction", state.cfg.ui, ("%s:%d"):format(p.path, p.line)))
+    end
   end
   log(("PRED    → %s:%d"):format(p.path or "·", p.line))
+  sync_status()
   return true
 end
 
@@ -487,6 +516,7 @@ local function render_result(res)
   else
     state.prediction = nil
   end
+  sync_status()
   local edits_in = res.edits
   if not edits_in or #edits_in == 0 then
     if (res.text or "") == "" then
@@ -545,7 +575,7 @@ local function result_summary(res)
 end
 
 local function handle_result(res)
-  if res.id == state.seq then state.awaiting = false; sync_status() end -- the current flight resolved
+  if res.id == state.seq then state.awaiting = false end -- the current flight resolved
   if res.aborted then -- superseded upstream by a newer request; expected churn
     log("ABORT   #" .. tostring(res.id) .. "  (superseded)")
     return
@@ -597,7 +627,7 @@ local function handle_line(line)
   -- and would crash `res.prediction`/`e.range` guards).
   local ok, res = pcall(vim.json.decode, line, { luanil = { object = true, array = true } })
   if not (ok and type(res) == "table") then return end
-  if res.config then apply_config(res.config) else handle_result(res) end
+  if res.config then apply_config(res.config) else handle_result(res); sync_status() end
 end
 
 local function on_stdout(_, data)
@@ -1157,6 +1187,8 @@ function M.setup(opts)
     map_tab = opts.map_tab ~= false, -- set false when another plugin (cmp) owns <Tab>
     filetypes = opts.filetypes,      -- optional allow-list; nil = all normal buffers
     show_hints = normalize_hints(opts.show_hints), -- display-only chrome; see normalize_hints
+    ui = require("neocursor.ui").setup(opts.ui),
+    statusline = statusline.normalize(opts.statusline),
     exclude_patterns = {},           -- filled from CppConfig (skip .env/.pem/... as context)
     heuristics = {},                 -- filled from CppConfig (active suppression rules)
     reject_hard = 2,
@@ -1316,6 +1348,8 @@ function M.setup(opts)
       "config      : debounce=" .. state.cfg.debounce .. "ms  heuristics=" .. #state.cfg.heuristics
         .. "  excludes=" .. #state.cfg.exclude_patterns,
       "hints       : edit=" .. tostring(hints().edit) .. "  prediction=" .. tostring(hints().prediction),
+      "ui          : " .. vim.inspect(state.cfg.ui, { newline = " ", indent = "" }),
+      "statusline  : " .. vim.inspect(state.cfg.statusline, { newline = " ", indent = "" }),
       "last suppress: " .. tostring(state.last_suppressed or "none"),
       "dismissed   : " .. state.dismissed .. "/" .. tostring(state.cfg.max_cleared or 20)
         .. (rejected_too_many() and "  (muted — passive triggers off until you accept)" or ""),
