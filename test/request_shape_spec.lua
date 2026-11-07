@@ -2,8 +2,12 @@
 -- trajectory format ("N-|old" / "N+|new" / "N |unchanged", 1-indexed), which
 -- is what Cursor's backend parses. Unified-diff hunks made some requests fail
 -- with `unavailable` every time.
+-- It also pins that the history is never empty for an edit the user made
+-- before the plugin loaded: lazy-loading on InsertEnter puts setup() after the
+-- first keystrokes, and a request without the rename in its history gets the
+-- rename undone by the backend.
 --   nvim --headless -u NONE -c "luafile test/request_shape_spec.lua"
-local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h")
+local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 vim.opt.rtp:prepend(root)
 vim.opt.swapfile = false
 io.stdout:setvbuf("no")
@@ -18,16 +22,36 @@ end
 
 local request_file = vim.fn.tempname()
 vim.env.NEOCURSOR_FAKE_REQUEST_FILE = request_file
+local edits_file = vim.fn.tempname()
+vim.env.NEOCURSOR_FAKE_EDITS_FILE = edits_file
+local default_edits = { { text = "line1 = 100", range = { start = 1, endInclusive = 1 } } }
+vim.fn.writefile({ vim.json.encode(default_edits) }, edits_file)
+local config_file = vim.fn.tempname()
+vim.env.NEOCURSOR_FAKE_CONFIG_FILE = config_file
+vim.fn.writefile({ vim.json.encode({ heuristics = { "HEURISTIC_REVERTING_USER_CHANGE" } }) }, config_file)
+
+local dir = vim.fn.tempname()
+vim.fn.mkdir(dir, "p")
+vim.cmd.cd(dir)
+
+local function open(name, lines)
+  vim.fn.writefile(lines, name)
+  vim.cmd.edit(name)
+end
+
+local function set(lines)
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+end
+
+open("renamed-before-load.ts", { "class A {", "  private retries: number;", "}" })
+set({ "class A {", "  private numberOfRetries: number;", "}" })
+open("loaded-before-setup.ts", { "const a = 1;", "const b = 2;" })
 
 local nc = require("neocursor")
 nc.setup({
   debounce = 30,
   sidecar_cmd = { vim.fn.executable("python3") == 1 and "python3" or "python", root .. "/test/fake_sidecar.py" },
 })
-
-local dir = vim.fn.tempname()
-vim.fn.mkdir(dir, "p")
-vim.cmd.cd(dir)
 
 local function replies()
   local n = 0
@@ -42,7 +66,7 @@ local function request(done)
   nc.suggest()
   local waited = 0
   local function tick()
-    if replies() > before then return done() end
+    if replies() > before then return vim.defer_fn(done, 100) end
     waited = waited + 20
     if waited >= 5000 then
       check("reply arrives", false, true)
@@ -64,16 +88,34 @@ local function sent_diffs(name, content)
   end
 end
 
-local function open(name, lines)
-  vim.fn.writefile(lines, name)
-  vim.cmd.edit(name)
-end
-
-local function set(lines)
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+local function logged(needle)
+  for _, l in ipairs(nc._log_lines()) do
+    if l:find(needle, 1, true) then return true end
+  end
+  return false
 end
 
 local steps = {
+  function(next)
+    set({ "const a = 1;", "const b = 20;" })
+    request(next)
+  end,
+  function(next)
+    check("a buffer open before setup() keeps its pre-edit text as the history baseline",
+      sent_diffs("loaded-before-setup.ts", "const a = 1;\nconst b = 20;"),
+      { "2-|const b = 2;\n2+|const b = 20;\n" })
+    next()
+  end,
+  function(next)
+    vim.cmd.edit("renamed-before-load.ts")
+    request(next)
+  end,
+  function(next)
+    check("a buffer edited before setup() sends the edit relative to the file on disk",
+      sent_diffs("renamed-before-load.ts", "class A {\n  private numberOfRetries: number;\n}"),
+      { "2-|  private retries: number;\n2+|  private numberOfRetries: number;\n" })
+    next()
+  end,
   function(next)
     open("scratch.ts", {})
     set({ "const foo = 'bar';", "const baz = " })
@@ -94,6 +136,19 @@ local steps = {
     check("a replacement and an append keep old and new line numbers, unchanged lines between",
       sent_diffs("edit.ts", "a\nB\nc\nd\ne"),
       { "2-|b\n2+|B\n3 |c\n4 |d\n5+|e\n" })
+    next()
+  end,
+  function(next)
+    open("revert.ts", { "keep", "gone", "tail" })
+    set({ "keep", "tail" })
+    vim.fn.writefile({ vim.json.encode({ { text = "gone\ntail", range = { start = 2, endInclusive = 2 } } }) }, edits_file)
+    vim.cmd.startinsert()
+    request(next)
+  end,
+  function(next)
+    check("a suggestion that puts back the line the user just deleted is suppressed",
+      { logged("SUPPRESS HEURISTIC_REVERTING_USER_CHANGE"), nc.has_suggestion() }, { true, false })
+    vim.cmd.stopinsert()
     next()
   end,
 }
