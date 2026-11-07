@@ -36,6 +36,8 @@ local state = {
   log_dirty = false,
   awaiting = false, -- a request is in flight (sent, no reply yet) — dashboard phase
   stderr_tail = {}, -- last stderr lines, replayed if the sidecar dies before ready
+  status_emitted = { state = "disabled", reason = "stopped" },
+  status_emit_queued = false,
 }
 
 -- Hint chrome — the ⟪neocursor · <Tab> …⟫ label on an edit and the ⟪<Tab> → L42⟫
@@ -203,6 +205,44 @@ local function apply_config(cfg)
   if type(cfg.is_fused) == "boolean" then state.cfg.is_fused = cfg.is_fused end
   log(("CONFIG  debounce=%sms heuristics=%d excludes=%d"):format(
     state.cfg.debounce, #state.cfg.heuristics, #state.cfg.exclude_patterns))
+end
+
+local function attach_block(bufnr)
+  if vim.bo[bufnr].buftype ~= "" then return "buftype" end -- skip prompts/terminals/nofile
+  local fts = state.cfg.filetypes
+  if fts and #fts > 0 and not vim.tbl_contains(fts, vim.bo[bufnr].filetype) then
+    return "filetype"
+  end
+  return nil
+end
+
+local function should_attach(bufnr) return attach_block(bufnr) == nil end
+
+local function status_of()
+  if not state.job then return "disabled", "stopped" end
+  local blocked = attach_block(vim.api.nvim_get_current_buf())
+  if blocked then return "disabled", blocked end
+  if state.timer or state.awaiting then return "pending", nil end
+  return "idle", nil
+end
+
+function M.status()
+  local s, reason = status_of()
+  return { state = s, reason = reason }
+end
+
+local function emit_status()
+  state.status_emit_queued = false
+  local now = M.status()
+  if vim.deep_equal(now, state.status_emitted) then return end
+  state.status_emitted = now
+  vim.api.nvim_exec_autocmds("User", { pattern = "NeocursorStatus", modeline = false, data = now })
+end
+
+local function sync_status()
+  if state.status_emit_queued then return end
+  state.status_emit_queued = true
+  vim.schedule(emit_status)
 end
 
 -- Suggestions live in insert mode. Every key that acts on one — <Tab>,
@@ -505,7 +545,7 @@ local function result_summary(res)
 end
 
 local function handle_result(res)
-  if res.id == state.seq then state.awaiting = false end -- the current flight resolved
+  if res.id == state.seq then state.awaiting = false; sync_status() end -- the current flight resolved
   if res.aborted then -- superseded upstream by a newer request; expected churn
     log("ABORT   #" .. tostring(res.id) .. "  (superseded)")
     return
@@ -600,6 +640,7 @@ function M.start()
     on_exit = function()
       local never_ready = not state.ready
       state.job = nil; state.ready = false; state.awaiting = false
+      sync_status()
       log("SIDECAR exited")
       -- Died during startup: say why instead of going quietly inert.
       if never_ready then
@@ -617,6 +658,7 @@ function M.start()
     return
   end
   state.job = job
+  sync_status()
   log("SIDECAR launching")
 end
 
@@ -817,23 +859,16 @@ local function send_request()
   }
   vim.fn.chansend(state.job, vim.json.encode(req) .. "\n")
   state.awaiting = true
+  sync_status()
   log(("REQ     #%d  %s %d:%d  ctx=%d diffs=%d lint=%d"):format(
     state.seq, path, cur[1] - 1, cur[2], #adds, fdh and #fdh or 0, lint and #lint.errors or 0))
-end
-
-local function should_attach(bufnr)
-  if vim.bo[bufnr].buftype ~= "" then return false end -- skip prompts/terminals/nofile
-  local fts = state.cfg.filetypes
-  if fts and #fts > 0 and not vim.tbl_contains(fts, vim.bo[bufnr].filetype) then
-    return false
-  end
-  return true
 end
 
 local function cancel_timer()
   if state.timer then
     state.timer:stop(); state.timer:close(); state.timer = nil
   end
+  sync_status()
 end
 
 -- keep=true preserves the on-screen suggestion (a retained ghost the user is
@@ -848,6 +883,7 @@ local function schedule_request(keep)
     cancel_timer()
     send_request()
   end))
+  sync_status()
 end
 
 -- Typing through the ghost: if the inline suggestion still extends what the
@@ -1239,6 +1275,7 @@ function M.setup(opts)
       end
     end,
   })
+  vim.api.nvim_create_autocmd({ "BufEnter", "FileType" }, { group = grp, callback = sync_status })
 
   if state.cfg.map_tab then
     -- A callback mapping, not an expr map: expr evaluation runs under textlock,
