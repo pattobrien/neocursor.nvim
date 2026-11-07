@@ -6,6 +6,7 @@ local M = {}
 
 local preview = require("neocursor.preview")
 local heuristics = require("neocursor.heuristics")
+local statusline = require("neocursor.statusline")
 local uv = vim.uv or vim.loop
 
 local state = {
@@ -36,6 +37,8 @@ local state = {
   log_dirty = false,
   awaiting = false, -- a request is in flight (sent, no reply yet) — dashboard phase
   stderr_tail = {}, -- last stderr lines, replayed if the sidecar dies before ready
+  status_emitted = { state = "disabled", reason = "stopped" },
+  status_emit_queued = false,
 }
 
 -- Hint chrome — the "⇥ accept · ⎋ dismiss" label on an edit and the "⇥ → L42"
@@ -62,12 +65,15 @@ local function plugin_root()
   return vim.fn.fnamemodify(src, ":h:h:h") -- .../lua/neocursor/init.lua -> root
 end
 
+local sync_status
+
 local function clear_suggestion()
   if state.suggestion then
     preview.clear(state.suggestion.bufnr)
     state.suggestion = nil
   end
   state.queue = nil -- abandon any pending multi-edit chain
+  sync_status()
 end
 
 local function buf_relpath(b)
@@ -205,6 +211,63 @@ local function apply_config(cfg)
     state.cfg.debounce, #state.cfg.heuristics, #state.cfg.exclude_patterns))
 end
 
+local function attach_block(bufnr)
+  if vim.bo[bufnr].buftype ~= "" then return "buftype" end -- skip prompts/terminals/nofile
+  local fts = state.cfg.filetypes
+  if fts and #fts > 0 and not vim.tbl_contains(fts, vim.bo[bufnr].filetype) then
+    return "filetype"
+  end
+  return nil
+end
+
+local function should_attach(bufnr) return attach_block(bufnr) == nil end
+
+local function status_of()
+  if not state.job then return "disabled", "stopped" end
+  local blocked = attach_block(vim.api.nvim_get_current_buf())
+  if blocked then return "disabled", blocked end
+  if state.timer or state.awaiting then return "pending", nil end
+  return "idle", nil
+end
+
+local function suggestion_status()
+  local s = state.suggestion
+  if not s then return nil end
+  local here = vim.api.nvim_get_current_buf() == s.bufnr
+  return { mode = s.mode, line = s.start0 + 1, at_cursor = here and cursor_at(s) }
+end
+
+local function prediction_status()
+  local p = state.prediction
+  if not (p and p.line) then return nil end
+  local bufnr = vim.api.nvim_get_current_buf()
+  if p.path and p.path ~= buf_relpath(bufnr) then return { line = p.line, path = p.path } end
+  return { line = math.min(math.max(p.line, 1), vim.api.nvim_buf_line_count(bufnr)) }
+end
+
+function M.status()
+  local s, reason = status_of()
+  return { state = s, reason = reason, suggestion = suggestion_status(), prediction = prediction_status() }
+end
+
+function M.statusline()
+  return statusline.render(M.status(), state.cfg and state.cfg.statusline)
+end
+
+local function emit_status()
+  state.status_emit_queued = false
+  local now = M.status()
+  if vim.deep_equal(now, state.status_emitted) then return end
+  state.status_emitted = now
+  vim.api.nvim_exec_autocmds("User", { pattern = "NeocursorStatus", modeline = false, data = now })
+end
+
+function sync_status()
+  if state.status_emit_queued then return end
+  state.status_emit_queued = true
+  vim.schedule(emit_status)
+end
+
 -- Suggestions live in insert mode. Every key that acts on one — <Tab>,
 -- <M-Right>, <C-]> — is an insert mapping, so a suggestion painted anywhere
 -- else is chrome nobody can answer: that is exactly what a reply landing a few
@@ -278,6 +341,7 @@ local function show_edit(edit)
     preview.diff(bufnr, start0, cur_range, lines, label, state.cfg.ui)
   end
   log(("SHOW    %-6s L%d  (%d ln)"):format(mode, start0 + 1, #lines))
+  sync_status()
   return true
 end
 
@@ -289,6 +353,7 @@ local function advance_after_apply()
   -- Every accept path lands here — Tab, word-at-a-time, and typing the ghost
   -- out in full — so this is the one place the churn budget refills.
   state.dismissed = 0
+  sync_status()
   local q = state.queue
   if not q then return end
   q.idx = q.idx + 1
@@ -392,6 +457,7 @@ local function reject_prediction(bufnr)
   record_pred_reject(state.prediction)
   state.prediction = nil
   preview.clear_prediction(bufnr or 0)
+  sync_status()
   return true
 end
 
@@ -420,6 +486,7 @@ local function show_prediction()
     end
   end
   log(("PRED    → %s:%d"):format(p.path or "·", p.line))
+  sync_status()
   return true
 end
 
@@ -449,6 +516,7 @@ local function render_result(res)
   else
     state.prediction = nil
   end
+  sync_status()
   local edits_in = res.edits
   if not edits_in or #edits_in == 0 then
     if (res.text or "") == "" then
@@ -559,7 +627,7 @@ local function handle_line(line)
   -- and would crash `res.prediction`/`e.range` guards).
   local ok, res = pcall(vim.json.decode, line, { luanil = { object = true, array = true } })
   if not (ok and type(res) == "table") then return end
-  if res.config then apply_config(res.config) else handle_result(res) end
+  if res.config then apply_config(res.config) else handle_result(res); sync_status() end
 end
 
 local function on_stdout(_, data)
@@ -602,6 +670,7 @@ function M.start()
     on_exit = function()
       local never_ready = not state.ready
       state.job = nil; state.ready = false; state.awaiting = false
+      sync_status()
       log("SIDECAR exited")
       -- Died during startup: say why instead of going quietly inert.
       if never_ready then
@@ -619,6 +688,7 @@ function M.start()
     return
   end
   state.job = job
+  sync_status()
   log("SIDECAR launching")
 end
 
@@ -819,23 +889,16 @@ local function send_request()
   }
   vim.fn.chansend(state.job, vim.json.encode(req) .. "\n")
   state.awaiting = true
+  sync_status()
   log(("REQ     #%d  %s %d:%d  ctx=%d diffs=%d lint=%d"):format(
     state.seq, path, cur[1] - 1, cur[2], #adds, fdh and #fdh or 0, lint and #lint.errors or 0))
-end
-
-local function should_attach(bufnr)
-  if vim.bo[bufnr].buftype ~= "" then return false end -- skip prompts/terminals/nofile
-  local fts = state.cfg.filetypes
-  if fts and #fts > 0 and not vim.tbl_contains(fts, vim.bo[bufnr].filetype) then
-    return false
-  end
-  return true
 end
 
 local function cancel_timer()
   if state.timer then
     state.timer:stop(); state.timer:close(); state.timer = nil
   end
+  sync_status()
 end
 
 -- keep=true preserves the on-screen suggestion (a retained ghost the user is
@@ -850,6 +913,7 @@ local function schedule_request(keep)
     cancel_timer()
     send_request()
   end))
+  sync_status()
 end
 
 -- Typing through the ghost: if the inline suggestion still extends what the
@@ -1124,6 +1188,7 @@ function M.setup(opts)
     filetypes = opts.filetypes,      -- optional allow-list; nil = all normal buffers
     show_hints = normalize_hints(opts.show_hints), -- display-only chrome; see normalize_hints
     ui = require("neocursor.ui").setup(opts.ui),
+    statusline = statusline.normalize(opts.statusline),
     exclude_patterns = {},           -- filled from CppConfig (skip .env/.pem/... as context)
     heuristics = {},                 -- filled from CppConfig (active suppression rules)
     reject_hard = 2,
@@ -1242,6 +1307,7 @@ function M.setup(opts)
       end
     end,
   })
+  vim.api.nvim_create_autocmd({ "BufEnter", "FileType" }, { group = grp, callback = sync_status })
 
   if state.cfg.map_tab then
     -- A callback mapping, not an expr map: expr evaluation runs under textlock,
@@ -1283,6 +1349,7 @@ function M.setup(opts)
         .. "  excludes=" .. #state.cfg.exclude_patterns,
       "hints       : edit=" .. tostring(hints().edit) .. "  prediction=" .. tostring(hints().prediction),
       "ui          : " .. vim.inspect(state.cfg.ui, { newline = " ", indent = "" }),
+      "statusline  : " .. vim.inspect(state.cfg.statusline, { newline = " ", indent = "" }),
       "last suppress: " .. tostring(state.last_suppressed or "none"),
       "dismissed   : " .. state.dismissed .. "/" .. tostring(state.cfg.max_cleared or 20)
         .. (rejected_too_many() and "  (muted — passive triggers off until you accept)" or ""),
