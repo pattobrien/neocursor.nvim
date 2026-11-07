@@ -62,7 +62,6 @@ local function with_pad(chunks)
   return out
 end
 
---- Jump pill for the next cursor-prediction target (Cursor's hint widget).
 function M.prediction(bufnr, row0, chunks)
   M.clear_prediction(bufnr)
   vim.api.nvim_buf_set_extmark(bufnr, ns_pred, row0, 0, {
@@ -409,7 +408,6 @@ end
 
 --- Diff overlay for edits that replace existing lines (overrides / rewrites).
 --- old_lines = current content of [start0, start0+#old_lines); new_lines = suggestion.
---- label = virt_text chunks for the accept/jump label, or nil to omit it (show_hints).
 function M.diff(bufnr, start0, old_lines, new_lines, label, cfg)
   M.clear(bufnr)
   cfg = cfg or ui.normalize(nil)
