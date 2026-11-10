@@ -345,14 +345,83 @@ local function reject_key(path, edit)
   return path .. "@" .. edit.start0 .. ":" .. table.concat(edit.lines, "\n")
 end
 
--- Lines the user just deleted (the newest diff's "-" lines), for the
--- reverting-user-change heuristic.
-local function recently_removed(path)
+local function cap(s, n)
+  if #s > n then return s:sub(1, n) .. "\n… (truncated)" end
+  return s
+end
+
+-- diff trajectory: baseline snapshot per buffer; unified diff baseline→current is
+-- the edit. commit_diff() coalesces at logical boundaries (leaving insert/BufLeave).
+local MAX_TRAJ, DIFF_CAP = 6, 4000
+
+local function baseline_text(buf)
+  local name = vim.api.nvim_buf_get_name(buf)
+  if not vim.bo[buf].modified or vim.fn.filereadable(name) == 0 then return buf_text(buf) end
+  local lines = vim.fn.readfile(name)
+  if vim.bo[buf].fileformat == "dos" then
+    for i, l in ipairs(lines) do lines[i] = l:gsub("\r$", "") end
+  end
+  return table.concat(lines, "\n")
+end
+
+local function ensure_baseline(buf, path)
+  if path and not state.dbase[buf] then
+    state.dbase[buf] = { path = path, text = baseline_text(buf) }
+  end
+end
+
+-- returns (diff_string, current_text) or nil if unchanged
+local function buf_diff(buf)
+  local b = state.dbase[buf]
+  if not b then return nil end
+  local cur = buf_text(buf)
+  if cur == b.text then return nil end
+  -- Cursor's own trajectory format, not a unified diff: "N-|old" numbered in
+  -- the old file, "N+|new" in the new one, "N |line" for unchanged lines between
+  -- changes, no surrounding context. The backend answers some edits sent as
+  -- unified hunks with `unavailable`, every time, and completes them in this
+  -- format.
+  local hunks = vim.diff(b.text .. "\n", cur .. "\n", { result_type = "indices" })
+  if #hunks == 0 then return nil end
+  local old = vim.split(b.text, "\n", { plain = true })
+  local new = vim.split(cur, "\n", { plain = true })
+  local out, after = {}, nil
+  for _, h in ipairs(hunks) do
+    local sa, ca, sb, cb = h[1], h[2], h[3], h[4]
+    local before = cb > 0 and sb - 1 or sb
+    for n = (after or before) + 1, before do out[#out + 1] = n .. " |" .. new[n] end
+    for i = 0, ca - 1 do out[#out + 1] = (sa + i) .. "-|" .. old[sa + i] end
+    for i = 0, cb - 1 do out[#out + 1] = (sb + i) .. "+|" .. new[sb + i] end
+    after = before + cb
+  end
+  return cap(table.concat(out, "\n") .. "\n", DIFF_CAP), cur
+end
+
+local function commit_diff(buf)
+  local path = buf_relpath(buf)
+  if not path then return end
+  local d, cur = buf_diff(buf)
+  if not d then return end
   local traj = state.dtraj[path]
-  if not traj or #traj == 0 then return nil end
+  if not traj then traj = {}; state.dtraj[path] = traj end
+  traj[#traj + 1] = { diff = d, ts = os.time() * 1000 }
+  while #traj > MAX_TRAJ do table.remove(traj, 1) end
+  state.dbase[buf] = { path = path, text = cur } -- advance baseline past this edit
+end
+
+-- Lines the user just deleted (the newest diff's "N-|" lines, the in-progress
+-- edit included), for the reverting-user-change heuristic.
+local function recently_removed(bufnr, path)
+  local newest = buf_diff(bufnr)
+  if not newest then
+    local traj = state.dtraj[path]
+    if not traj or #traj == 0 then return nil end
+    newest = traj[#traj].diff
+  end
   local set = {}
-  for line in traj[#traj].diff:gmatch("[^\n]+") do
-    if line:sub(1, 1) == "-" and line:sub(1, 3) ~= "---" then set[line:sub(2)] = true end
+  for line in newest:gmatch("[^\n]+") do
+    local removed = line:match("^%d+%-|(.*)$")
+    if removed then set[removed] = true end
   end
   return set
 end
@@ -514,7 +583,7 @@ local function render_result(res)
   local first = list[1]
   local suppressed = heuristics.should_suppress(state.cfg.heuristics, {
     bufnr = bufnr, start0 = first.start0, end0_excl = first.end0_excl, lines = first.lines,
-    recently_removed = recently_removed(path),
+    recently_removed = recently_removed(bufnr, path),
     rejections = state.rejects, key = reject_key(path, first), hard_reject = state.cfg.reject_hard,
   })
   if suppressed then
@@ -723,11 +792,6 @@ local function collect_additional_files(cur_buf)
   return files
 end
 
-local function cap(s, n)
-  if #s > n then return s:sub(1, n) .. "\n… (truncated)" end
-  return s
-end
-
 -- linterErrors: current-buffer diagnostics → native LinterError shape (0-indexed).
 -- vim.diagnostic.severity (ERROR/WARN/INFO/HINT = 1/2/3/4) matches Cursor's enum 1:1.
 local SEV = {
@@ -754,55 +818,6 @@ local function collect_linter_errors(buf, path)
     }
   end
   return { path = path, errors = errors }
-end
-
--- diff trajectory: baseline snapshot per buffer; unified diff baseline→current is
--- the edit. commit_diff() coalesces at logical boundaries (leaving insert/BufLeave).
-local MAX_TRAJ, DIFF_CAP = 6, 4000
-
-local function ensure_baseline(buf, path)
-  if path and not state.dbase[buf] then
-    state.dbase[buf] = { path = path, text = buf_text(buf) }
-  end
-end
-
--- returns (diff_string, current_text) or nil if unchanged
-local function buf_diff(buf)
-  local b = state.dbase[buf]
-  if not b then return nil end
-  local cur = buf_text(buf)
-  if cur == b.text then return nil end
-  -- Cursor's own trajectory format, not a unified diff: "N-|old" numbered in
-  -- the old file, "N+|new" in the new one, "N |line" for unchanged lines between
-  -- changes, no surrounding context. The backend answers some edits sent as
-  -- unified hunks with `unavailable`, every time, and completes them in this
-  -- format.
-  local hunks = vim.diff(b.text .. "\n", cur .. "\n", { result_type = "indices" })
-  if #hunks == 0 then return nil end
-  local old = vim.split(b.text, "\n", { plain = true })
-  local new = vim.split(cur, "\n", { plain = true })
-  local out, after = {}, nil
-  for _, h in ipairs(hunks) do
-    local sa, ca, sb, cb = h[1], h[2], h[3], h[4]
-    local before = cb > 0 and sb - 1 or sb
-    for n = (after or before) + 1, before do out[#out + 1] = n .. " |" .. new[n] end
-    for i = 0, ca - 1 do out[#out + 1] = (sa + i) .. "-|" .. old[sa + i] end
-    for i = 0, cb - 1 do out[#out + 1] = (sb + i) .. "+|" .. new[sb + i] end
-    after = before + cb
-  end
-  return cap(table.concat(out, "\n") .. "\n", DIFF_CAP), cur
-end
-
-local function commit_diff(buf)
-  local path = buf_relpath(buf)
-  if not path then return end
-  local d, cur = buf_diff(buf)
-  if not d then return end
-  local traj = state.dtraj[path]
-  if not traj then traj = {}; state.dtraj[path] = traj end
-  traj[#traj + 1] = { diff = d, ts = os.time() * 1000 }
-  while #traj > MAX_TRAJ do table.remove(traj, 1) end
-  state.dbase[buf] = { path = path, text = cur } -- advance baseline past this edit
 end
 
 local function collect_file_diff_histories(cur_buf, cur_path)
@@ -1167,6 +1182,12 @@ function M.setup(opts)
       or nil,
   }
   M.start()
+
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(b) and vim.bo[b].buftype == "" then
+      ensure_baseline(b, buf_relpath(b))
+    end
+  end
 
   local grp = vim.api.nvim_create_augroup("neocursor", { clear = true })
   vim.api.nvim_create_autocmd({ "TextChangedI", "CursorMovedI" }, {

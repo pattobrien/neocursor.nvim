@@ -12,8 +12,12 @@ import time
 ERROR_FILE = os.environ.get("NEOCURSOR_FAKE_ERROR_FILE")
 EDITS_FILE = os.environ.get("NEOCURSOR_FAKE_EDITS_FILE")
 REQUEST_FILE = os.environ.get("NEOCURSOR_FAKE_REQUEST_FILE")
+CONFIG_FILE = os.environ.get("NEOCURSOR_FAKE_CONFIG_FILE")
 
 print("ready", file=sys.stderr, flush=True)
+if CONFIG_FILE:
+    with open(CONFIG_FILE, encoding="utf-8") as fh:
+        print(json.dumps({"config": json.load(fh)}), flush=True)
 
 for line in sys.stdin:
     line = line.strip()
